@@ -39,7 +39,7 @@ def _make_arg(value) -> dict:
     if isinstance(value, float):
         if value != value:  # NaN
             return {"type": "null"}
-        return {"type": "real", "value": str(value)}
+        return {"type": "float", "value": str(value)}
     return {"type": "text", "value": str(value)}
 
 
