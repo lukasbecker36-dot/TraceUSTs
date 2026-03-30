@@ -1,0 +1,39 @@
+name: Backfill Historical Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_date:
+        description: "Start date (YYYY-MM-DD). Leave blank to resume from latest DB entry."
+        required: false
+        default: ""
+
+jobs:
+  backfill:
+    name: Load historical TRACE Treasury data into Turso
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # backfill can take a while for multi-year range
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backfill
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          if [ -n "${{ github.event.inputs.from_date }}" ]; then
+            python scripts/backfill.py --from "${{ github.event.inputs.from_date }}"
+          else
+            python scripts/backfill.py --resume
+          fi
