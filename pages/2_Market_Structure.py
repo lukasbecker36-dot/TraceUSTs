@@ -6,6 +6,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from src import analytics
 from src.ui_helpers import (
     CATEGORY_COLOURS,
     PLOTLY_LAYOUT,
@@ -30,15 +31,17 @@ if df.empty:
     st.warning("No data for the selected date range.")
     st.stop()
 
-# Exclude 'Total' category rows to avoid double-counting
-non_total = df[~df["trading_category"].str.lower().str.contains("total", na=False)]
+# Subtype-level aggregates only (maturity_bucket=None, on_the_run=None)
+# This is the single correct row type for cross-subtype comparison.
+agg = analytics.agg_only(df)
 
 # ── 1. ATS vs D2C share over time ─────────────────────────────────────────────
 
 st.subheader("ATS & Interdealer vs Dealer-to-Customer — volume share over time")
 
+non_total_agg = agg[~agg["trading_category"].str.lower().str.contains("total", na=False)]
 cat_daily = (
-    non_total.groupby(["trade_date", "trading_category"])["volume_par"]
+    non_total_agg.groupby(["trade_date", "trading_category"])["volume_par"]
     .sum()
     .reset_index()
 )
@@ -51,11 +54,7 @@ fig_share = px.area(
     y="share_pct",
     color="trading_category",
     color_discrete_map=CATEGORY_COLOURS,
-    labels={
-        "trade_date": "Date",
-        "share_pct": "Share (%)",
-        "trading_category": "Category",
-    },
+    labels={"trade_date": "Date", "share_pct": "Share (%)", "trading_category": "Category"},
     title="Trading Category Share of Total Volume (%)",
 )
 fig_share.update_layout(**PLOTLY_LAYOUT)
@@ -66,8 +65,9 @@ st.plotly_chart(fig_share, use_container_width=True)
 
 st.subheader("Volume by Security Type over time")
 
+total_agg = agg[agg["trading_category"].str.lower().str.contains("total", na=False)]
 subtype_daily = (
-    non_total.groupby(["trade_date", "security_subtype"])["volume_par"]
+    total_agg.groupby(["trade_date", "security_subtype"])["volume_par"]
     .sum()
     .reset_index()
 )
@@ -78,11 +78,7 @@ fig_subtype = px.area(
     y="volume_par",
     color="security_subtype",
     color_discrete_map=SUBTYPE_COLOURS,
-    labels={
-        "trade_date": "Date",
-        "volume_par": "Volume (par, $bn)",
-        "security_subtype": "Type",
-    },
+    labels={"trade_date": "Date", "volume_par": "Volume (par, $bn)", "security_subtype": "Type"},
     title="Total Volume by Security Type ($bn)",
 )
 fig_subtype.update_layout(**PLOTLY_LAYOUT)
@@ -92,9 +88,11 @@ st.plotly_chart(fig_subtype, use_container_width=True)
 
 st.subheader("On-the-Run vs Off-the-Run — Nominal Coupons & TIPS")
 
-otr_df = non_total[
-    non_total["security_subtype"].isin(["Nominal Coupons", "TIPS"])
-    & non_total["on_the_run"].notna()
+# Use OTR rows (on_the_run set), summed across all maturity buckets
+otr_df = analytics.otr_only(df)
+otr_df = otr_df[
+    otr_df["security_subtype"].isin(["Nominal Coupons", "TIPS"])
+    & otr_df["trading_category"].str.lower().str.contains("total", na=False)
 ]
 
 if otr_df.empty:
@@ -105,7 +103,6 @@ else:
         .sum()
         .reset_index()
     )
-
     fig_otr = px.line(
         otr_daily.sort_values("trade_date"),
         x="trade_date",
@@ -125,34 +122,44 @@ else:
 
 # ── 4. Maturity breakdown heatmap (Nominal Coupons) ────────────────────────────
 
-st.subheader("Volume by Maturity Bucket — Nominal Coupons")
+st.subheader("Volume by Maturity Bucket — Nominal Coupons (Total category)")
 
-maturity_df = non_total[
-    (non_total["security_subtype"] == "Nominal Coupons")
-    & non_total["maturity_bucket"].notna()
+# Use maturity-level rows (maturity set, OTR not set = maturity aggregate)
+mat_df = analytics.maturity_only(df)
+mat_df = mat_df[
+    (mat_df["security_subtype"] == "Nominal Coupons")
+    & mat_df["trading_category"].str.lower().str.contains("total", na=False)
 ]
 
-if maturity_df.empty:
+if mat_df.empty:
     st.info("No maturity-bucket breakdown available.")
 else:
-    # Pivot to get a time × maturity heatmap
-    maturity_pivot = (
-        maturity_df.groupby(["trade_date", "maturity_bucket"])["volume_par"]
+    mat_pivot = (
+        mat_df.groupby(["trade_date", "maturity_bucket"])["volume_par"]
         .sum()
         .unstack("maturity_bucket")
         .fillna(0)
     )
 
-    # Sort maturity columns logically
-    ordered = [c for c in ["<=2Y", ">2-3Y", ">3-5Y", ">5-7Y", ">7-10Y", ">10Y"] if c in maturity_pivot.columns]
-    remaining = [c for c in maturity_pivot.columns if c not in ordered]
-    maturity_pivot = maturity_pivot[ordered + remaining]
+    # Order maturity columns from short to long end
+    MATURITY_ORDER = [
+        "<= 2 years",
+        "> 2 years and <= 3 years",
+        "> 3 years and <= 5 years",
+        "> 5 years and <= 7 years",
+        "> 7 years and <= 10 years",
+        "> 10 years and <= 20 years",
+        "> 20 years",
+    ]
+    ordered = [c for c in MATURITY_ORDER if c in mat_pivot.columns]
+    remaining = [c for c in mat_pivot.columns if c not in ordered]
+    mat_pivot = mat_pivot[ordered + remaining]
 
     fig_heat = go.Figure(
         go.Heatmap(
-            x=maturity_pivot.index,
-            y=maturity_pivot.columns,
-            z=maturity_pivot.values.T,
+            x=mat_pivot.index,
+            y=mat_pivot.columns.tolist(),
+            z=mat_pivot.values.T,
             colorscale="Blues",
             hoverongaps=False,
             colorbar=dict(title="$bn"),
@@ -162,7 +169,9 @@ else:
         title="Nominal Coupons Volume by Maturity Bucket ($bn)",
         xaxis_title="Date",
         yaxis_title="Remaining Maturity",
-        **{k: v for k, v in PLOTLY_LAYOUT.items() if k != "hovermode"},
+        template="plotly_white",
+        font=dict(family="Arial, sans-serif", size=13),
+        margin=dict(l=200, r=30, t=50, b=50),
         hovermode="closest",
     )
     st.plotly_chart(fig_heat, use_container_width=True)

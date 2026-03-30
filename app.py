@@ -101,14 +101,17 @@ latest_date = df["trade_date"].max()
 cutoff = latest_date - pd.Timedelta(days=90)
 recent = df[df["trade_date"] >= cutoff]
 
-# Use "Total" rows to avoid double-counting ATS + D2C
-totals = recent[recent["trading_category"].str.lower().str.contains("total", na=False)]
+# Use subtype-level aggregate rows with trading_category=Total to avoid double-counting
+agg_totals = analytics.agg_only(recent)
+agg_totals = agg_totals[
+    agg_totals["trading_category"].str.lower().str.contains("total", na=False)
+]
 
-if totals.empty:
-    totals = recent
+if agg_totals.empty:
+    agg_totals = recent
 
 daily_by_subtype = (
-    totals.groupby(["trade_date", "security_subtype"])["volume_par"]
+    agg_totals.groupby(["trade_date", "security_subtype"])["volume_par"]
     .sum()
     .reset_index()
 )
@@ -130,9 +133,12 @@ if not daily_by_subtype.empty:
 
 st.subheader(f"ATS vs Dealer-to-Customer Split — {latest_str}")
 
-latest_day = df[df["trade_date"] == latest_date]
+# Aggregate-level rows only for the latest day, excluding the Total category
+latest_day_agg = analytics.agg_only(df[df["trade_date"] == latest_date])
 cat_vol = (
-    latest_day[~latest_day["trading_category"].str.lower().str.contains("total", na=False)]
+    latest_day_agg[
+        ~latest_day_agg["trading_category"].str.lower().str.contains("total", na=False)
+    ]
     .groupby("trading_category")["volume_par"]
     .sum()
     .reset_index()

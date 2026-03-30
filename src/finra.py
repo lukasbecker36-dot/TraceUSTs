@@ -1,12 +1,35 @@
 """
 FINRA TRACE Treasury daily aggregate downloader and XLSX parser.
 
-CDN URL pattern:
+CDN URL:
   https://cdn.finra.org/trace/treasury-aggregates/daily/ts-daily-aggregates-YYYY-MM-DD.xlsx
 
-The parser is intentionally flexible: it normalises column names at runtime
-so it adapts if FINRA ever renames headers.  Run scripts/inspect_xlsx.py once
-to print the actual column names from a live file.
+File layout (confirmed from live file 2026-03-27):
+  Row 0  : Title  "TRACE Volumes - Month DD, YYYY"  (merged across all columns)
+  Row 1  : Group headers — "Category" | "ATS & Interdealer" (×2) | "Dealer to Customer" (×2) | "Total" (×2) | "VWAP"
+  Row 2  : Sub-headers  — ""         | "Trades" | "Par Value" | "Trades" | "Par Value" | "Trades" | "Par Value" | ""
+  Row 3+ : Data
+
+The "Category" column encodes a 3-level hierarchy (no indentation in cell text):
+  Bills
+  FRNs
+  Nominal Coupons          ← subtype aggregate (all maturities combined)
+    <= 2 years             ← maturity aggregate (OTR + OFR combined)
+      On-the-run
+      Off-the-run
+    > 2 years and <= 3 years
+      On-the-run
+      Off-the-run
+    ...
+  TIPS
+    <= 5 years
+      On-the-run
+      Off-the-run
+    ...
+  Total                    ← grand total (skipped; derivable)
+
+Each XLSX row is pivoted to 3 DB records — one per trading category
+(ATS and Interdealer / Dealer-to-Customer / Total).
 """
 import io
 import logging
@@ -21,66 +44,41 @@ logger = logging.getLogger(__name__)
 CDN_BASE = "https://cdn.finra.org/trace/treasury-aggregates/daily"
 CDN_URL = f"{CDN_BASE}/ts-daily-aggregates-{{date}}.xlsx"
 
-# ── Column name normalisation ─────────────────────────────────────────────────
-# Maps lowercase-stripped column headers → our internal names.
-# Extend here if FINRA renames a column.
-_COL_MAP: dict[str, str] = {
-    # Date
-    "trade date": "trade_date",
-    "date": "trade_date",
-    # Security subtype
-    "security subtype": "security_subtype",
-    "security type": "security_subtype",
-    "subtype": "security_subtype",
-    "instrument type": "security_subtype",
-    # Maturity bucket
-    "remaining maturity": "maturity_bucket",
-    "remaining maturity range": "maturity_bucket",
-    "maturity range": "maturity_bucket",
-    "maturity": "maturity_bucket",
-    # On-the-run
-    "on-the-run/off-the-run": "on_the_run_raw",
-    "on/off the run": "on_the_run_raw",
-    "on the run indicator": "on_the_run_raw",
-    "on-the-run indicator": "on_the_run_raw",
-    "run status": "on_the_run_raw",
-    # Trading category
-    "trade category": "trading_category",
-    "trading category": "trading_category",
-    "category": "trading_category",
-    "trade type": "trading_category",
-    # Volume
-    "par value (billions)": "volume_par",
-    "par amount (billions)": "volume_par",
-    "volume (par, billions)": "volume_par",
-    "volume (billions)": "volume_par",
-    "par value": "volume_par",
-    "volume": "volume_par",
-    "total par (billions)": "volume_par",
-    # Trade count
-    "trade count": "trade_count",
-    "number of trades": "trade_count",
-    "# of trades": "trade_count",
-    "# trades": "trade_count",
-    "count": "trade_count",
-    # VWAP
-    "vwap": "vwap",
-    "volume weighted average price": "vwap",
-    "weighted average price": "vwap",
-    "avg price": "vwap",
+# ── Category classification ───────────────────────────────────────────────────
+
+# Maps raw Category text → normalised security_subtype stored in DB
+_SUBTYPE_MARKERS: dict[str, str] = {
+    "Bills": "Bills",
+    "FRNs": "FRN",
+    "Nominal Coupons": "Nominal Coupons",
+    "TIPS": "TIPS",
 }
 
-# Normalised on-the-run text → stored value ('On' / 'Off')
-_OTR_MAP: dict[str, str] = {
-    "on-the-run": "On",
-    "on the run": "On",
-    "on": "On",
-    "otr": "On",
-    "off-the-run": "Off",
-    "off the run": "Off",
-    "off": "Off",
-    "ofr": "Off",
+# Maps raw Category text → on_the_run value stored in DB
+_OTR_MARKERS: dict[str, str] = {
+    "On-the-run": "On",
+    "Off-the-run": "Off",
 }
+
+# Rows whose Category text means "skip this row entirely"
+_SKIP_MARKERS = {"Total", "Notes"}
+
+# ── Flat column names after parsing the wide header ───────────────────────────
+# Layout: Category | ATS Trades | ATS Par | D2C Trades | D2C Par | Total Trades | Total Par | VWAP
+_FLAT_COLS = [
+    "category",
+    "ats_trades", "ats_par",
+    "d2c_trades", "d2c_par",
+    "total_trades", "total_par",
+    "vwap",
+]
+
+# Maps (trades_col, par_col) → trading_category label stored in DB
+_CATEGORY_COLS = [
+    ("ats_trades",   "ats_par",   "ATS and Interdealer"),
+    ("d2c_trades",   "d2c_par",   "Dealer-to-Customer"),
+    ("total_trades", "total_par", "Total"),
+]
 
 
 # ── Download ──────────────────────────────────────────────────────────────────
@@ -90,7 +88,7 @@ def build_url(trade_date: date) -> str:
 
 
 def download_xlsx(trade_date: date) -> Optional[bytes]:
-    """Return raw XLSX bytes for trade_date, or None if the file doesn't exist."""
+    """Return raw XLSX bytes, or None if the file doesn't exist (HTTP 404)."""
     url = build_url(trade_date)
     try:
         resp = requests.get(url, timeout=30)
@@ -106,63 +104,99 @@ def download_xlsx(trade_date: date) -> Optional[bytes]:
 
 # ── Parse ─────────────────────────────────────────────────────────────────────
 
-def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Rename columns using _COL_MAP (case/whitespace insensitive)."""
-    rename = {}
-    for col in df.columns:
-        key = str(col).strip().lower()
-        if key in _COL_MAP:
-            rename[col] = _COL_MAP[key]
-    if rename:
-        df = df.rename(columns=rename)
-    return df
-
-
 def parse_xlsx(content: bytes, trade_date: date) -> list[dict]:
     """
-    Parse XLSX content into a list of record dicts ready for db.upsert_records().
+    Parse a TRACE Treasury daily XLSX into DB-ready records.
 
-    If the actual column names don't match any entry in _COL_MAP, extend that
-    dict.  Run scripts/inspect_xlsx.py to print the live column names.
+    Strategy:
+    1. Read without header; find the first data row by locating the first row
+       whose column-0 value is a known security subtype (e.g. "Bills").
+    2. Assign flat column names based on the known 8-column layout.
+    3. Walk the Category column with a state machine to infer subtype /
+       maturity / on-the-run for each row.
+    4. Pivot each wide row to 3 records (ATS, D2C, Total).
     """
-    xls = pd.ExcelFile(io.BytesIO(content), engine="openpyxl")
-    sheet = xls.sheet_names[0]
-    df = xls.parse(sheet)
+    raw = pd.read_excel(io.BytesIO(content), engine="openpyxl", header=None)
 
-    logger.debug("Raw columns in %s sheet '%s': %s", trade_date, sheet, list(df.columns))
+    # ── Find the first data row ───────────────────────────────────────────────
+    data_start = None
+    for idx, row in raw.iterrows():
+        cell = str(row.iloc[0]).strip()
+        if cell in _SUBTYPE_MARKERS:
+            data_start = idx
+            break
 
-    df = _normalise_columns(df)
-    df = df.dropna(how="all")
+    if data_start is None:
+        logger.error("Could not locate data rows in XLSX for %s — no known security type found", trade_date)
+        return []
+
+    data = raw.iloc[data_start:].copy().reset_index(drop=True)
+
+    # Trim to the expected number of columns
+    n_cols = min(len(_FLAT_COLS), len(data.columns))
+    data = data.iloc[:, :n_cols].copy()
+    data.columns = _FLAT_COLS[:n_cols]
+
+    # Clean up the Category column
+    data["category"] = data["category"].astype(str).str.strip()
 
     date_str = trade_date.strftime("%Y-%m-%d")
     records: list[dict] = []
 
-    for _, row in df.iterrows():
-        # ── Required fields ────────────────────────────────────────────────
-        subtype = _str_or_none(row, "security_subtype")
-        category = _str_or_none(row, "trading_category")
-        if not subtype or not category:
-            continue  # skip footer / total rows without key identifiers
+    current_subtype: Optional[str] = None
+    current_maturity: Optional[str] = None   # empty string = no maturity breakdown
 
-        # ── Optional fields ────────────────────────────────────────────────
-        maturity = _str_or_none(row, "maturity_bucket") or ""
-        otr_raw = _str_or_none(row, "on_the_run_raw")
-        on_the_run = _OTR_MAP.get(otr_raw.lower(), "") if otr_raw else ""
+    for _, row in data.iterrows():
+        cat = row["category"]
 
-        volume = _float_or_none(row, "volume_par")
-        count = _int_or_none(row, "trade_count")
-        vwap = _float_or_none(row, "vwap")
+        # ── Skip non-data rows ────────────────────────────────────────────────
+        if not cat or cat.lower() in ("nan", "none") or cat in _SKIP_MARKERS:
+            continue
+        if cat.lower().startswith("strips"):
+            continue  # footnote row
 
-        records.append({
-            "trade_date": date_str,
-            "security_subtype": subtype,
-            "trading_category": category,
-            "maturity_bucket": maturity,
-            "on_the_run": on_the_run,
-            "volume_par": volume,
-            "trade_count": count,
-            "vwap": vwap,
-        })
+        # ── Classify the row ──────────────────────────────────────────────────
+        if cat in _SUBTYPE_MARKERS:
+            # Security-subtype aggregate row (all maturities combined)
+            current_subtype = _SUBTYPE_MARKERS[cat]
+            current_maturity = ""
+            maturity = ""
+            on_the_run = ""
+
+        elif cat in _OTR_MARKERS:
+            # On-the-run / Off-the-run sub-row
+            if current_subtype is None:
+                continue
+            maturity = current_maturity or ""
+            on_the_run = _OTR_MARKERS[cat]
+
+        elif "year" in cat.lower():
+            # Maturity-bucket aggregate row (OTR + OFR combined)
+            if current_subtype is None:
+                continue
+            current_maturity = cat
+            maturity = cat
+            on_the_run = ""
+
+        else:
+            logger.debug("Unrecognised category row '%s' — skipping", cat)
+            continue
+
+        # ── Emit one record per trading category ──────────────────────────────
+        vwap_val = _float_val(row, "vwap") if "vwap" in row.index else None
+
+        for trades_col, par_col, category_label in _CATEGORY_COLS:
+            records.append({
+                "trade_date":       date_str,
+                "security_subtype": current_subtype,
+                "trading_category": category_label,
+                "maturity_bucket":  maturity,
+                "on_the_run":       on_the_run,
+                "volume_par":       _float_val(row, par_col),
+                "trade_count":      _int_val(row, trades_col),
+                # VWAP only applies to the Total category (rightmost column)
+                "vwap": vwap_val if category_label == "Total" else None,
+            })
 
     logger.info("Parsed %d records for %s", len(records), trade_date)
     return records
@@ -170,34 +204,26 @@ def parse_xlsx(content: bytes, trade_date: date) -> list[dict]:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _str_or_none(row: pd.Series, col: str) -> Optional[str]:
-    val = row.get(col)
-    if val is None or (isinstance(val, float) and val != val):
-        return None
-    s = str(val).strip()
-    return s if s and s.lower() not in ("nan", "none", "n/a", "-") else None
-
-
-def _float_or_none(row: pd.Series, col: str) -> Optional[float]:
+def _float_val(row: pd.Series, col: str) -> Optional[float]:
     val = row.get(col)
     if val is None:
         return None
     try:
         f = float(val)
-        return None if f != f else f  # NaN check
+        return None if f != f else f   # NaN → None
     except (ValueError, TypeError):
         return None
 
 
-def _int_or_none(row: pd.Series, col: str) -> Optional[int]:
-    val = _float_or_none(row, col)
-    return int(val) if val is not None else None
+def _int_val(row: pd.Series, col: str) -> Optional[int]:
+    f = _float_val(row, col)
+    return int(round(f)) if f is not None else None
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def fetch_day(trade_date: date) -> Optional[list[dict]]:
-    """Download and parse one trading day.  Returns None if no data available."""
+    """Download and parse one trading day.  Returns None if no file available."""
     content = download_xlsx(trade_date)
     if content is None:
         return None

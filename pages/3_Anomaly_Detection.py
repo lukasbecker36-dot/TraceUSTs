@@ -66,10 +66,15 @@ if df.empty:
     st.warning("No data for the selected filters.")
     st.stop()
 
-# Aggregate to daily total volume for the chosen slice
-non_total = df[~df["trading_category"].str.lower().str.contains("total", na=False)]
+# Use aggregate-level rows only (no maturity/OTR sub-rows) to avoid double-counting
+# Then filter to the non-Total trading categories before summing
+df_agg = analytics.agg_only(df)
+if df_agg.empty:
+    df_agg = df
+
+non_total = df_agg[~df_agg["trading_category"].str.lower().str.contains("total", na=False)]
 if non_total.empty:
-    non_total = df
+    non_total = df_agg
 
 daily = (
     non_total.groupby("trade_date")["volume_par"]
@@ -78,11 +83,8 @@ daily = (
     .sort_values("trade_date")
 )
 
-# ── Compute rolling stats ─────────────────────────────────────────────────────
+# ── Compute rolling stats + anomalies ─────────────────────────────────────────
 
-daily_stats = analytics.compute_rolling_stats_for_group(
-    daily, value_col="volume_par", windows=windows
-)
 daily_stats = analytics.detect_anomalies(
     daily,
     value_col="volume_par",
