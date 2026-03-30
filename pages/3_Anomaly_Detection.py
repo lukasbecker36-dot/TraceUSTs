@@ -237,7 +237,7 @@ else:
     display_cols = [c for c in display_cols if c in anomalies.columns]
     tbl = anomalies[display_cols].sort_values("trade_date", ascending=False).copy()
     tbl["trade_date"] = tbl["trade_date"].dt.strftime("%Y-%m-%d")
-    tbl["anomaly_zscore"] = tbl["anomaly_zscore"].round(2)
+    tbl["anomaly_zscore"] = pd.to_numeric(tbl["anomaly_zscore"], errors="coerce").round(2)
     tbl["volume_par"] = tbl["volume_par"].round(2)
     tbl.columns = ["Date", "Volume ($bn)", "Window (days)", "Z-score"]
     st.dataframe(tbl, use_container_width=True, hide_index=True)

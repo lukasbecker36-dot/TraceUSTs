@@ -100,8 +100,8 @@ def detect_anomalies(
 
     df = compute_rolling_stats(df, value_col=value_col, windows=windows)
     df["is_anomaly"] = False
-    df["anomaly_window"] = pd.NA
-    df["anomaly_zscore"] = pd.NA
+    df["anomaly_window"] = pd.array([pd.NA] * len(df), dtype="Int64")
+    df["anomaly_zscore"] = pd.array([pd.NA] * len(df), dtype="Float64")
 
     for w in windows:
         col = f"zscore_{w}d"
