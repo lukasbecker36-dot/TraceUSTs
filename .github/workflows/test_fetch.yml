@@ -1,0 +1,103 @@
+name: Test Single Date Fetch
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_date:
+        description: "Date to test (YYYY-MM-DD)"
+        required: false
+        default: "2026-03-27"
+
+jobs:
+  test:
+    name: Download and parse one TRACE file
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Test download and parse
+        run: |
+          python - <<'EOF'
+          import io, sys
+          from datetime import date
+          import pandas as pd
+          import requests
+
+          test_date = date.fromisoformat("${{ github.event.inputs.test_date }}")
+          url = f"https://cdn.finra.org/trace/treasury-aggregates/daily/ts-daily-aggregates-{test_date}.xlsx"
+
+          print(f"\n=== Downloading: {url} ===")
+          resp = requests.get(url, timeout=30)
+          print(f"HTTP status: {resp.status_code}")
+          if resp.status_code != 200:
+              print("FAILED — no file at this URL")
+              sys.exit(1)
+          print(f"File size: {len(resp.content):,} bytes")
+
+          print("\n=== Raw Excel structure ===")
+          raw = pd.read_excel(io.BytesIO(resp.content), engine="openpyxl", header=None)
+          print(f"Shape: {raw.shape[0]} rows x {raw.shape[1]} cols")
+          print("\nFirst 6 rows (all columns):")
+          print(raw.head(6).to_string())
+
+          print("\n=== Parsing via src/finra.py ===")
+          sys.path.insert(0, ".")
+          from src.finra import parse_xlsx
+          records = parse_xlsx(resp.content, test_date)
+          print(f"Records parsed: {len(records)}")
+          if records:
+              print("\nFirst 3 records:")
+              for r in records[:3]:
+                  print(r)
+          else:
+              print("WARNING: 0 records parsed — parser could not identify data rows")
+          EOF
+
+      - name: Test Turso write (one record)
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          python - <<'EOF'
+          import sys
+          sys.path.insert(0, ".")
+          from src import db
+
+          print("=== Initialising DB schema ===")
+          db.init_db()
+          print("init_db() OK")
+
+          test_record = {
+              "trade_date": "2099-01-01",
+              "security_subtype": "TEST",
+              "trading_category": "TEST",
+              "maturity_bucket": "",
+              "on_the_run": "",
+              "volume_par": 1.23,
+              "trade_count": 42,
+              "vwap": None,
+          }
+          print("\n=== Writing test record ===")
+          db.upsert_records([test_record])
+          print("upsert OK")
+
+          print("\n=== Reading it back ===")
+          result = db.execute("SELECT * FROM treasury_daily WHERE trade_date = '2099-01-01'")
+          print(f"Rows found: {len(result['rows'])}")
+
+          print("\n=== Cleaning up test record ===")
+          db.execute("DELETE FROM treasury_daily WHERE trade_date = '2099-01-01'")
+          print("Done — DB write/read/delete all working")
+          EOF
