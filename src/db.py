@@ -54,7 +54,10 @@ def _pipeline(stmts: list[dict]) -> list[dict]:
         json={"requests": pipeline_reqs},
         timeout=60,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(
+            f"Turso HTTP {resp.status_code}: {resp.text[:500]}"
+        )
     data = resp.json()
 
     results = []
@@ -120,33 +123,43 @@ def init_db() -> None:
 
 # ── Write ─────────────────────────────────────────────────────────────────────
 
-UPSERT_SQL = """
-    INSERT OR REPLACE INTO treasury_daily
-        (trade_date, security_subtype, trading_category, maturity_bucket,
-         on_the_run, volume_par, trade_count, vwap)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-"""
+_UPSERT_COLS = (
+    "trade_date, security_subtype, trading_category, maturity_bucket, "
+    "on_the_run, volume_par, trade_count, vwap"
+)
+_ROW_PH = "(?, ?, ?, ?, ?, ?, ?, ?)"
+_CHUNK = 50  # rows per INSERT; 50 rows × 8 args = 400 args per request
 
 
 def upsert_records(records: list[dict]) -> int:
+    """
+    Insert/replace records using multi-row INSERT via a single execute() call
+    per chunk.  Avoids execute_batch() which triggers a 400 from Turso when
+    the pipeline contains multiple parameterised statements.
+    """
     if not records:
         return 0
-    stmts = [
-        (UPSERT_SQL, [
-            r["trade_date"],
-            r["security_subtype"],
-            r["trading_category"],
-            r.get("maturity_bucket") or "",
-            r.get("on_the_run") or "",
-            r.get("volume_par"),
-            r.get("trade_count"),
-            r.get("vwap"),
-        ])
-        for r in records
-    ]
-    # Batch in chunks of 100 to stay under request-body limits
-    for i in range(0, len(stmts), 100):
-        execute_batch(stmts[i : i + 100])
+
+    for i in range(0, len(records), _CHUNK):
+        chunk = records[i : i + _CHUNK]
+        sql = (
+            f"INSERT OR REPLACE INTO treasury_daily ({_UPSERT_COLS}) VALUES "
+            + ", ".join(_ROW_PH for _ in chunk)
+        )
+        args: list = []
+        for r in chunk:
+            args.extend([
+                r["trade_date"],
+                r["security_subtype"],
+                r["trading_category"],
+                r.get("maturity_bucket") or "",
+                r.get("on_the_run") or "",
+                r.get("volume_par"),
+                r.get("trade_count"),
+                r.get("vwap"),
+            ])
+        execute(sql, args)
+
     return len(records)
 
 

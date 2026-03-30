@@ -79,25 +79,35 @@ jobs:
           db.init_db()
           print("init_db() OK")
 
-          test_record = {
-              "trade_date": "2099-01-01",
+          print("\n=== Test execute() with args (single row INSERT) ===")
+          db.execute(
+              "INSERT OR REPLACE INTO treasury_daily "
+              "(trade_date, security_subtype, trading_category, maturity_bucket, on_the_run, volume_par, trade_count, vwap) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+              ["2099-01-01", "TEST", "TEST", "", "", 1.23, 42, None]
+          )
+          print("execute() with args: OK")
+
+          print("\n=== Test upsert_records() ===")
+          db.upsert_records([{
+              "trade_date": "2099-01-02",
               "security_subtype": "TEST",
               "trading_category": "TEST",
               "maturity_bucket": "",
               "on_the_run": "",
-              "volume_par": 1.23,
-              "trade_count": 42,
+              "volume_par": 9.99,
+              "trade_count": 7,
               "vwap": None,
-          }
-          print("\n=== Writing test record ===")
-          db.upsert_records([test_record])
-          print("upsert OK")
+          }])
+          print("upsert_records(): OK")
 
-          print("\n=== Reading it back ===")
-          result = db.execute("SELECT * FROM treasury_daily WHERE trade_date = '2099-01-01'")
+          print("\n=== Reading back ===")
+          result = db.execute("SELECT trade_date, volume_par FROM treasury_daily WHERE security_subtype = 'TEST' ORDER BY trade_date")
           print(f"Rows found: {len(result['rows'])}")
+          for row in result['rows']:
+              print(" ", [v.get('value') for v in row])
 
-          print("\n=== Cleaning up test record ===")
-          db.execute("DELETE FROM treasury_daily WHERE trade_date = '2099-01-01'")
-          print("Done — DB write/read/delete all working")
+          print("\n=== Cleaning up ===")
+          db.execute("DELETE FROM treasury_daily WHERE security_subtype = 'TEST'")
+          print("Done")
           EOF
