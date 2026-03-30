@@ -29,8 +29,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # FINRA daily aggregate data became available from this date.
-# Files before this date will return 404 and be skipped.
-START_DATE = date(2020, 1, 1)
+# Files before this date return 404 — no point scanning earlier.
+START_DATE = date(2023, 2, 13)
 
 # Seconds to sleep between requests (be polite to the CDN)
 SLEEP_BETWEEN = 0.5
