@@ -1,0 +1,40 @@
+name: Daily TRACE Treasury Update
+
+on:
+  schedule:
+    # 02:00 UTC = 9 PM ET (EST) / 10 PM ET (EDT) — FINRA publishes at 8 PM ET
+    - cron: "0 2 * * 2-6"   # Tue–Sat UTC covers Mon–Fri US trading days
+
+  # Allow manual trigger from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  update:
+    name: Fetch latest trading day and load into Turso
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily update
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python scripts/daily_update.py
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Daily update failed. Check the run log above for details."
+          echo "::notice::Tip — run 'python scripts/backfill.py --resume' locally to catch up."
