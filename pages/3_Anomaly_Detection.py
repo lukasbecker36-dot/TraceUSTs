@@ -225,6 +225,11 @@ fig_z.update_layout(
     yaxis_title="Standard Deviations (σ)",
 )
 st.plotly_chart(fig_z, use_container_width=True)
+st.caption(
+    "A z-score measures how far today's volume is from its recent average, expressed in standard deviations (σ). "
+    "A score of +2 means volume was unusually high — two standard deviations above the rolling mean — "
+    "while −2 means unusually low. Scores beyond ±2σ are statistically uncommon and typically warrant a closer look."
+)
 
 # ── Anomaly table ─────────────────────────────────────────────────────────────
 
