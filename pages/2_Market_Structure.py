@@ -105,11 +105,11 @@ else:
         .reset_index()
     )
     fig_otr = px.line(
-        otr_daily.sort_values("trade_date"),
+        otr_daily.sort_values(["security_subtype", "on_the_run", "trade_date"]),
         x="trade_date",
         y="volume_par",
         color="on_the_run",
-        facet_col="security_subtype",
+        facet_row="security_subtype",
         color_discrete_map={"On": "#1f4e79", "Off": "#a8c5e0"},
         labels={
             "trade_date": "Date",
