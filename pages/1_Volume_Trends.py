@@ -6,6 +6,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from src import db
 from src.ui_helpers import (
     CATEGORY_COLOURS,
     PLOTLY_LAYOUT,
@@ -17,6 +18,7 @@ from src.ui_helpers import (
 )
 
 st.set_page_config(page_title="Volume Trends | TRACE Treasury", layout="wide")
+db.init_db()
 st.title("📈 Volume Trends")
 st.caption("Daily par-value trading volume by security type and trading category.")
 

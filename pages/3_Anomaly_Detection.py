@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src import analytics
+from src import analytics, db
 from src.ui_helpers import (
     CATEGORY_COLOURS,
     PLOTLY_LAYOUT,
@@ -16,6 +16,7 @@ from src.ui_helpers import (
 )
 
 st.set_page_config(page_title="Anomaly Detection | TRACE Treasury", layout="wide")
+db.init_db()
 st.title("🔍 Anomaly Detection")
 st.caption(
     "Flags trading days where volume deviates significantly from its rolling average. "

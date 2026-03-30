@@ -27,6 +27,9 @@ st.caption(
     "Data published ~8 PM ET each business day."
 )
 
+# Ensure schema exists (safe to call repeatedly — uses CREATE TABLE IF NOT EXISTS)
+db.init_db()
+
 # ── Latest date banner ────────────────────────────────────────────────────────
 
 latest_str = db.get_latest_date()

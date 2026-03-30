@@ -6,6 +6,7 @@ import io
 import pandas as pd
 import streamlit as st
 
+from src import db
 from src.ui_helpers import (
     category_selector,
     date_range_selector,
@@ -15,6 +16,7 @@ from src.ui_helpers import (
 )
 
 st.set_page_config(page_title="Export | TRACE Treasury", layout="wide")
+db.init_db()
 st.title("⬇️ Export Data")
 st.caption("Filter the dataset and download as CSV.")
 
