@@ -141,7 +141,7 @@ for tab, s in zip(tabs, selected_series):
         if subset.empty:
             st.info(f"No {s} data in this date range.")
             continue
-        fig = px.area(
+        fig = px.line(
             subset,
             x="month",
             y="share_pct",
@@ -150,7 +150,7 @@ for tab, s in zip(tabs, selected_series):
             title=f"{s} — Investor Class Share (%)",
         )
         fig.update_layout(**PLOTLY_LAYOUT)
-        fig.update_yaxes(range=[0, 100])
+        fig.update_traces(line=dict(width=1.5))
         st.plotly_chart(fig, use_container_width=True)
 
 # ── 3. Latest auction — bar chart ─────────────────────────────────────────────
