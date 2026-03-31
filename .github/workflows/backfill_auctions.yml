@@ -1,0 +1,39 @@
+name: Backfill Auction Allotments
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_date:
+        description: "Only load auctions with issue_date >= this date (YYYY-MM-DD). Leave blank to load all available data."
+        required: false
+        default: "2020-01-01"
+
+jobs:
+  backfill:
+    name: Backfill Treasury investor class auction allotments
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backfill
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          if [ -n "${{ github.event.inputs.from_date }}" ]; then
+            python scripts/backfill_auctions.py --from "${{ github.event.inputs.from_date }}"
+          else
+            python scripts/backfill_auctions.py
+          fi
