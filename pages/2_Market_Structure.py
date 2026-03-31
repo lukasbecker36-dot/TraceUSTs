@@ -135,6 +135,55 @@ mat_df = mat_df[
 if mat_df.empty:
     st.info("No maturity-bucket breakdown available.")
 else:
+    mat_line = (
+        mat_df.groupby(["trade_date", "maturity_bucket"])["volume_par"]
+        .sum()
+        .reset_index()
+    )
+
+    MATURITY_ORDER = [
+        "<= 2 years",
+        "> 2 years and <= 3 years",
+        "> 3 years and <= 5 years",
+        "> 5 years and <= 7 years",
+        "> 7 years and <= 10 years",
+        "> 10 years and <= 20 years",
+        "> 20 years",
+    ]
+    MATURITY_COLOURS = {
+        "<= 2 years":               "#264653",
+        "> 2 years and <= 3 years": "#2a9d8f",
+        "> 3 years and <= 5 years": "#57cc99",
+        "> 5 years and <= 7 years": "#e9c46a",
+        "> 7 years and <= 10 years":"#f4a261",
+        "> 10 years and <= 20 years":"#e76f51",
+        "> 20 years":               "#9b2226",
+    }
+
+    # Enforce display order
+    mat_line["maturity_bucket"] = pd.Categorical(
+        mat_line["maturity_bucket"], categories=MATURITY_ORDER, ordered=True
+    )
+    mat_line = mat_line.sort_values(["maturity_bucket", "trade_date"])
+
+    fig_mat_line = px.line(
+        mat_line,
+        x="trade_date",
+        y="volume_par",
+        color="maturity_bucket",
+        color_discrete_map=MATURITY_COLOURS,
+        category_orders={"maturity_bucket": MATURITY_ORDER},
+        labels={
+            "trade_date": "Date",
+            "volume_par": "Volume (par, $bn)",
+            "maturity_bucket": "Maturity",
+        },
+        title="Nominal Coupons Volume by Maturity Bucket over Time ($bn)",
+    )
+    fig_mat_line.update_layout(**PLOTLY_LAYOUT)
+    fig_mat_line.update_traces(line=dict(width=1.5))
+    st.plotly_chart(fig_mat_line, use_container_width=True)
+
     mat_pivot = (
         mat_df.groupby(["trade_date", "maturity_bucket"])["volume_par"]
         .sum()
