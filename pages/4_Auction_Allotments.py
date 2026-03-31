@@ -57,8 +57,8 @@ if df.empty:
     )
     st.stop()
 
-# Drop aggregate/total rows — investor_class values that are just a sum of others
-df = df[~df["investor_class"].str.strip().str.lower().isin(["total", "total allotted", "grand total"])]
+# Drop aggregate/total rows — any investor_class containing "total" is a sum column, not a class
+df = df[~df["investor_class"].str.strip().str.lower().str.contains("total", na=False)]
 
 # ── Tenor (security_type) selectors ──────────────────────────────────────────
 
