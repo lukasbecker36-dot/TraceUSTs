@@ -6,6 +6,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from src import db
@@ -141,16 +142,41 @@ for tab, s in zip(tabs, selected_series):
         if subset.empty:
             st.info(f"No {s} data in this date range.")
             continue
+
+        # Add 3-month rolling average per investor class
+        subset = subset.copy()
+        subset["share_pct_3m"] = (
+            subset.groupby("investor_class")["share_pct"]
+            .transform(lambda x: x.rolling(3, min_periods=1).mean())
+        )
+
         fig = px.line(
             subset,
             x="month",
             y="share_pct",
             color="investor_class",
             labels={"month": "Month", "share_pct": "Share (%)", "investor_class": "Investor Class"},
-            title=f"{s} — Investor Class Share (%)",
+            title=f"{s} — Investor Class Share (%) with 3-month rolling average",
         )
+        fig.update_traces(line=dict(width=1, dash="dot"), opacity=0.4)
+
+        # Overlay solid 3-month rolling average lines
+        colours = {trace.name: trace.line.color for trace in fig.data}
+        for inv_class, grp in subset.groupby("investor_class"):
+            grp = grp.sort_values("month")
+            fig.add_trace(
+                go.Scatter(
+                    x=grp["month"],
+                    y=grp["share_pct_3m"],
+                    mode="lines",
+                    name=inv_class,
+                    line=dict(width=2, color=colours.get(inv_class)),
+                    showlegend=False,
+                    hovertemplate="%{x|%b %Y}<br>3m avg: %{y:.1f}%<extra>" + inv_class + "</extra>",
+                )
+            )
+
         fig.update_layout(**PLOTLY_LAYOUT)
-        fig.update_traces(line=dict(width=1.5))
         st.plotly_chart(fig, use_container_width=True)
 
 # ── 3. Latest auction — bar chart ─────────────────────────────────────────────
