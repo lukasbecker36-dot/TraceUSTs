@@ -63,17 +63,15 @@ if df.empty:
     )
     st.stop()
 
-# ── Aggregate: quarterly totals by investor class ────────────────────────────
-# For time-series charts, group by quarter to reduce noise
+# ── Aggregate: monthly totals by investor class ───────────────────────────────
 
-df["quarter"] = df["issue_date"].dt.to_period("Q").dt.to_timestamp()
+df["month"] = df["issue_date"].dt.to_period("M").dt.to_timestamp()
 
 # ── 1. Summary metrics ────────────────────────────────────────────────────────
 
 latest_date = df["issue_date"].max()
 latest_df = df[df["issue_date"] == latest_date]
 
-total_latest = latest_df.groupby("series")["total_issue_amt"].first().sum()
 by_class_latest = latest_df.groupby("investor_class")["allotment_amt"].sum()
 
 if not by_class_latest.empty:
@@ -83,39 +81,23 @@ else:
     top_class = "N/A"
     top_class_pct = 0.0
 
-# Prior period comparison
-prior_date = df[df["issue_date"] < latest_date]["issue_date"].max()
-prior_df = df[df["issue_date"] == prior_date] if pd.notna(prior_date) else pd.DataFrame()
-prior_total = prior_df.groupby("series")["total_issue_amt"].first().sum() if not prior_df.empty else None
-
-delta_pct = None
-if prior_total and prior_total > 0:
-    delta_pct = (total_latest - prior_total) / prior_total * 100
-
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 with col1:
-    delta_str = f"{delta_pct:+.1f}% vs prior" if delta_pct is not None else None
-    st.metric(
-        f"Total Issuance — {latest_date.strftime('%d %b %Y')}",
-        f"${total_latest:,.0f}m",
-        delta=delta_str,
-    )
-with col2:
     st.metric("Largest Investor Class", top_class, delta=f"{top_class_pct:.1f}% of allotments")
-with col3:
+with col2:
     n_auctions = latest_df["cusip"].nunique()
-    st.metric("Auctions on Latest Date", n_auctions)
+    st.metric(f"Auctions — {latest_date.strftime('%d %b %Y')}", n_auctions)
 
 # ── 2. Stacked area — investor class share over time ─────────────────────────
 
 st.subheader("Investor Class Share of Total Allotments over Time")
 
 qt = (
-    df.groupby(["quarter", "series", "investor_class"])["allotment_amt"]
+    df.groupby(["month", "series", "investor_class"])["allotment_amt"]
     .sum()
     .reset_index()
 )
-qt_total = qt.groupby(["quarter", "series"])["allotment_amt"].transform("sum")
+qt_total = qt.groupby(["month", "series"])["allotment_amt"].transform("sum")
 qt["share_pct"] = qt["allotment_amt"] / qt_total * 100
 
 # One tab per series
@@ -126,17 +108,17 @@ else:
 
 for tab, s in zip(tabs, selected_series):
     with tab:
-        subset = qt[qt["series"] == s].sort_values(["quarter", "investor_class"])
+        subset = qt[qt["series"] == s].sort_values(["month", "investor_class"])
         if subset.empty:
             st.info(f"No {s} data in this date range.")
             continue
         fig = px.area(
             subset,
-            x="quarter",
+            x="month",
             y="share_pct",
             color="investor_class",
             labels={
-                "quarter": "Quarter",
+                "month": "Month",
                 "share_pct": "Share (%)",
                 "investor_class": "Investor Class",
             },
@@ -203,7 +185,7 @@ top_classes = (
 
 line_data = (
     df[df["investor_class"].isin(top_classes)]
-    .groupby(["quarter", "series", "investor_class"])["allotment_amt"]
+    .groupby(["month", "series", "investor_class"])["allotment_amt"]
     .sum()
     .reset_index()
 )
@@ -216,61 +198,32 @@ if not line_data.empty:
 
     for tab, s in zip(tabs2, selected_series):
         with tab:
-            subset = line_data[line_data["series"] == s].sort_values(["investor_class", "quarter"])
+            subset = line_data[line_data["series"] == s].sort_values(["investor_class", "month"])
             if subset.empty:
                 st.info(f"No {s} data in this date range.")
                 continue
             fig_line = px.line(
                 subset,
-                x="quarter",
+                x="month",
                 y="allotment_amt",
                 color="investor_class",
                 labels={
-                    "quarter": "Quarter",
+                    "month": "Month",
                     "allotment_amt": "Allotment ($m)",
                     "investor_class": "Investor Class",
                 },
-                title=f"{s} — Quarterly Allotments by Investor Class ($m)",
+                title=f"{s} — Monthly Allotments by Investor Class ($m)",
             )
             fig_line.update_layout(**PLOTLY_LAYOUT)
             fig_line.update_traces(line=dict(width=1.5))
             st.plotly_chart(fig_line, use_container_width=True)
 
-# ── 5. Security type breakdown ────────────────────────────────────────────────
-
-st.subheader("Allotments by Security Type — Latest Date")
-
-sec_type_data = (
-    latest_df.groupby(["series", "security_type"])["total_issue_amt"]
-    .sum()
-    .reset_index()
-    .sort_values("total_issue_amt", ascending=False)
-)
-
-if not sec_type_data.empty:
-    fig_sec = px.bar(
-        sec_type_data,
-        x="security_type",
-        y="total_issue_amt",
-        color="series",
-        barmode="group",
-        labels={
-            "security_type": "Security Type",
-            "total_issue_amt": "Total Issued ($m)",
-            "series": "Series",
-        },
-        title="Total Issue Amount by Security Type ($m)",
-    )
-    fig_sec.update_layout(**PLOTLY_LAYOUT)
-    fig_sec.update_xaxes(tickangle=45)
-    st.plotly_chart(fig_sec, use_container_width=True)
-
-# ── 6. Raw data table ─────────────────────────────────────────────────────────
+# ── 5. Raw data table ─────────────────────────────────────────────────────────
 
 with st.expander("Raw data — latest auction date"):
     tbl = latest_df[["series", "security_type", "cusip", "maturity_date",
-                      "rate", "investor_class", "allotment_amt", "total_issue_amt"]].copy()
+                      "rate", "investor_class", "allotment_amt"]].copy()
     tbl = tbl.sort_values(["series", "security_type", "cusip", "investor_class"])
     tbl.columns = ["Series", "Security Type", "CUSIP", "Maturity",
-                   "Rate", "Investor Class", "Allotment ($m)", "Total Issue ($m)"]
+                   "Rate", "Investor Class", "Allotment ($m)"]
     st.dataframe(tbl, use_container_width=True, hide_index=True)
