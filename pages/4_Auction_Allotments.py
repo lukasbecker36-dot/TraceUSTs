@@ -6,7 +6,6 @@ from datetime import date, timedelta
 
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 from src import db
@@ -24,18 +23,13 @@ st.caption(
 
 st.sidebar.header("Filters")
 
-# Date range
 latest_str = db.get_auction_latest_issue_date()
-if latest_str:
-    latest = date.fromisoformat(latest_str)
-else:
-    latest = date.today()
+latest = date.fromisoformat(latest_str) if latest_str else date.today()
 default_start = latest - timedelta(days=5 * 365)
 
 start = st.sidebar.date_input("From", value=default_start, key="aa_start")
 end = st.sidebar.date_input("To", value=latest, key="aa_end")
 
-# Series selector
 series_opts = ["Bills", "Coupons"]
 selected_series = st.sidebar.multiselect("Series", series_opts, default=series_opts, key="aa_series")
 
@@ -59,11 +53,49 @@ df = load_auction_data(str(start), str(end), tuple(sorted(selected_series)))
 if df.empty:
     st.warning(
         "No auction allotments data in the selected range. "
-        "Run `python scripts/backfill_auctions.py` to load historical data."
+        "Run the **Backfill Auction Allotments** GitHub Actions workflow to load historical data."
     )
     st.stop()
 
-# ── Aggregate: monthly totals by investor class ───────────────────────────────
+# Drop aggregate/total rows — investor_class values that are just a sum of others
+df = df[~df["investor_class"].str.strip().str.lower().isin(["total", "total allotted", "grand total"])]
+
+# ── Tenor (security_type) selectors ──────────────────────────────────────────
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Tenor filter")
+
+# Build per-series tenor lists from loaded data
+bills_tenors = sorted(df[df["series"] == "Bills"]["security_type"].dropna().unique().tolist())
+coupon_tenors = sorted(df[df["series"] == "Coupons"]["security_type"].dropna().unique().tolist())
+
+selected_bills_tenors = bills_tenors
+selected_coupon_tenors = coupon_tenors
+
+if "Bills" in selected_series and bills_tenors:
+    selected_bills_tenors = st.sidebar.multiselect(
+        "Bills tenors", bills_tenors, default=bills_tenors, key="aa_bills_tenors"
+    )
+
+if "Coupons" in selected_series and coupon_tenors:
+    selected_coupon_tenors = st.sidebar.multiselect(
+        "Coupon tenors", coupon_tenors, default=coupon_tenors, key="aa_coupon_tenors"
+    )
+
+# Apply tenor filter
+tenor_mask = pd.Series(False, index=df.index)
+if "Bills" in selected_series and selected_bills_tenors:
+    tenor_mask |= (df["series"] == "Bills") & df["security_type"].isin(selected_bills_tenors)
+if "Coupons" in selected_series and selected_coupon_tenors:
+    tenor_mask |= (df["series"] == "Coupons") & df["security_type"].isin(selected_coupon_tenors)
+
+df = df[tenor_mask]
+
+if df.empty:
+    st.warning("No data for the selected tenors.")
+    st.stop()
+
+# ── Monthly column ─────────────────────────────────────────────────────────────
 
 df["month"] = df["issue_date"].dt.to_period("M").dt.to_timestamp()
 
@@ -78,29 +110,26 @@ if not by_class_latest.empty:
     top_class = by_class_latest.idxmax()
     top_class_pct = by_class_latest.max() / by_class_latest.sum() * 100 if by_class_latest.sum() > 0 else 0
 else:
-    top_class = "N/A"
-    top_class_pct = 0.0
+    top_class, top_class_pct = "N/A", 0.0
 
 col1, col2 = st.columns(2)
 with col1:
     st.metric("Largest Investor Class", top_class, delta=f"{top_class_pct:.1f}% of allotments")
 with col2:
-    n_auctions = latest_df["cusip"].nunique()
-    st.metric(f"Auctions — {latest_date.strftime('%d %b %Y')}", n_auctions)
+    st.metric(f"Auctions — {latest_date.strftime('%d %b %Y')}", latest_df["cusip"].nunique())
 
 # ── 2. Stacked area — investor class share over time ─────────────────────────
 
 st.subheader("Investor Class Share of Total Allotments over Time")
 
-qt = (
+mt = (
     df.groupby(["month", "series", "investor_class"])["allotment_amt"]
     .sum()
     .reset_index()
 )
-qt_total = qt.groupby(["month", "series"])["allotment_amt"].transform("sum")
-qt["share_pct"] = qt["allotment_amt"] / qt_total * 100
+mt_total = mt.groupby(["month", "series"])["allotment_amt"].transform("sum")
+mt["share_pct"] = mt["allotment_amt"] / mt_total * 100
 
-# One tab per series
 if len(selected_series) > 1:
     tabs = st.tabs(selected_series)
 else:
@@ -108,7 +137,7 @@ else:
 
 for tab, s in zip(tabs, selected_series):
     with tab:
-        subset = qt[qt["series"] == s].sort_values(["month", "investor_class"])
+        subset = mt[mt["series"] == s].sort_values(["month", "investor_class"])
         if subset.empty:
             st.info(f"No {s} data in this date range.")
             continue
@@ -117,11 +146,7 @@ for tab, s in zip(tabs, selected_series):
             x="month",
             y="share_pct",
             color="investor_class",
-            labels={
-                "month": "Month",
-                "share_pct": "Share (%)",
-                "investor_class": "Investor Class",
-            },
+            labels={"month": "Month", "share_pct": "Share (%)", "investor_class": "Investor Class"},
             title=f"{s} — Investor Class Share (%)",
         )
         fig.update_layout(**PLOTLY_LAYOUT)
@@ -148,11 +173,7 @@ if not bar_data.empty:
             color="series",
             barmode="group",
             orientation="h",
-            labels={
-                "allotment_amt": "Allotment ($m)",
-                "investor_class": "Investor Class",
-                "series": "Series",
-            },
+            labels={"allotment_amt": "Allotment ($m)", "investor_class": "Investor Class", "series": "Series"},
             title="Allotment by Investor Class ($m)",
         )
     else:
@@ -161,10 +182,7 @@ if not bar_data.empty:
             x="allotment_amt",
             y="investor_class",
             orientation="h",
-            labels={
-                "allotment_amt": "Allotment ($m)",
-                "investor_class": "Investor Class",
-            },
+            labels={"allotment_amt": "Allotment ($m)", "investor_class": "Investor Class"},
             title=f"{selected_series[0]} — Allotment by Investor Class ($m)",
             color_discrete_sequence=["#1f4e79"],
         )
@@ -175,7 +193,6 @@ if not bar_data.empty:
 
 st.subheader("Allotment Trends by Investor Class ($m)")
 
-# Top classes by total allotment over period
 top_classes = (
     df.groupby("investor_class")["allotment_amt"]
     .sum()
@@ -207,23 +224,34 @@ if not line_data.empty:
                 x="month",
                 y="allotment_amt",
                 color="investor_class",
-                labels={
-                    "month": "Month",
-                    "allotment_amt": "Allotment ($m)",
-                    "investor_class": "Investor Class",
-                },
+                labels={"month": "Month", "allotment_amt": "Allotment ($m)", "investor_class": "Investor Class"},
                 title=f"{s} — Monthly Allotments by Investor Class ($m)",
             )
             fig_line.update_layout(**PLOTLY_LAYOUT)
             fig_line.update_traces(line=dict(width=1.5))
             st.plotly_chart(fig_line, use_container_width=True)
 
-# ── 5. Raw data table ─────────────────────────────────────────────────────────
+# ── 5. CSV export ─────────────────────────────────────────────────────────────
 
-with st.expander("Raw data — latest auction date"):
-    tbl = latest_df[["series", "security_type", "cusip", "maturity_date",
-                      "rate", "investor_class", "allotment_amt"]].copy()
-    tbl = tbl.sort_values(["series", "security_type", "cusip", "investor_class"])
-    tbl.columns = ["Series", "Security Type", "CUSIP", "Maturity",
-                   "Rate", "Investor Class", "Allotment ($m)"]
-    st.dataframe(tbl, use_container_width=True, hide_index=True)
+st.subheader("Export Data")
+
+export_cols = ["issue_date", "series", "security_type", "cusip", "maturity_date",
+               "rate", "investor_class", "allotment_amt"]
+export_col_names = ["Issue Date", "Series", "Security Type", "CUSIP", "Maturity Date",
+                    "Rate", "Investor Class", "Allotment ($m)"]
+
+ecol1, ecol2 = st.columns(2)
+
+for col, s in zip([ecol1, ecol2], ["Bills", "Coupons"]):
+    with col:
+        s_df = df[df["series"] == s][export_cols].copy()
+        s_df.columns = export_col_names
+        s_df = s_df.sort_values(["Issue Date", "Security Type", "Investor Class"])
+        st.download_button(
+            label=f"Download {s} CSV",
+            data=s_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"treasury_auction_allotments_{s.lower()}_{start}_{end}.csv",
+            mime="text/csv",
+            disabled=s_df.empty,
+            key=f"dl_{s}",
+        )
