@@ -215,6 +215,113 @@ def get_data(
     return df
 
 
+# ── Auction allotments schema ─────────────────────────────────────────────────
+
+def init_auction_db() -> None:
+    execute("""
+        CREATE TABLE IF NOT EXISTS auction_allotments (
+            issue_date      TEXT NOT NULL,
+            series          TEXT NOT NULL,
+            security_type   TEXT NOT NULL,
+            cusip           TEXT NOT NULL,
+            maturity_date   TEXT,
+            rate            REAL,
+            total_issue_amt REAL,
+            investor_class  TEXT NOT NULL,
+            allotment_amt   REAL,
+            PRIMARY KEY (issue_date, series, cusip, investor_class)
+        )
+    """)
+    execute("CREATE INDEX IF NOT EXISTS idx_aa_date ON auction_allotments(issue_date)")
+    execute("CREATE INDEX IF NOT EXISTS idx_aa_series ON auction_allotments(series)")
+    execute("CREATE INDEX IF NOT EXISTS idx_aa_class ON auction_allotments(investor_class)")
+
+
+_AUCTION_UPSERT_COLS = (
+    "issue_date, series, security_type, cusip, maturity_date, "
+    "rate, total_issue_amt, investor_class, allotment_amt"
+)
+_AUCTION_ROW_PH = "(?, ?, ?, ?, ?, ?, ?, ?, ?)"
+
+
+def upsert_auction_records(records: list[dict]) -> int:
+    if not records:
+        return 0
+    for i in range(0, len(records), _CHUNK):
+        chunk = records[i : i + _CHUNK]
+        sql = (
+            f"INSERT OR REPLACE INTO auction_allotments ({_AUCTION_UPSERT_COLS}) VALUES "
+            + ", ".join(_AUCTION_ROW_PH for _ in chunk)
+        )
+        args: list = []
+        for r in chunk:
+            args.extend([
+                r["issue_date"],
+                r["series"],
+                r["security_type"],
+                r["cusip"],
+                r.get("maturity_date"),
+                r.get("rate"),
+                r.get("total_issue_amt"),
+                r["investor_class"],
+                r.get("allotment_amt"),
+            ])
+        execute(sql, args)
+    return len(records)
+
+
+def get_auction_data(
+    start_date: str = None,
+    end_date: str = None,
+    series: list = None,
+    security_types: list = None,
+) -> pd.DataFrame:
+    conditions, args = [], []
+    if start_date:
+        conditions.append("issue_date >= ?")
+        args.append(start_date)
+    if end_date:
+        conditions.append("issue_date <= ?")
+        args.append(end_date)
+    if series:
+        ph = ",".join("?" * len(series))
+        conditions.append(f"series IN ({ph})")
+        args.extend(series)
+    if security_types:
+        ph = ",".join("?" * len(security_types))
+        conditions.append(f"security_type IN ({ph})")
+        args.extend(security_types)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT * FROM auction_allotments {where} ORDER BY issue_date ASC"
+    result = execute(sql, args or None)
+    df = _result_to_df(result)
+    if df.empty:
+        return df
+    df["issue_date"] = pd.to_datetime(df["issue_date"])
+    for col in ("rate", "total_issue_amt", "allotment_amt"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def get_auction_latest_issue_date() -> Optional[str]:
+    result = execute("SELECT MAX(issue_date) AS max_date FROM auction_allotments")
+    if result["rows"] and result["rows"][0][0]["type"] != "null":
+        return result["rows"][0][0]["value"]
+    return None
+
+
+def get_auction_distinct_values(column: str) -> list:
+    allowed = {"series", "security_type", "investor_class"}
+    if column not in allowed:
+        raise ValueError(f"Column '{column}' not allowed for distinct query")
+    result = execute(
+        f"SELECT DISTINCT {column} FROM auction_allotments "
+        f"WHERE {column} IS NOT NULL AND {column} != '' ORDER BY {column}"
+    )
+    return [r[0]["value"] for r in result["rows"] if r[0]["type"] != "null"]
+
+
 def get_distinct_values(column: str) -> list:
     allowed = {"security_subtype", "trading_category", "maturity_bucket", "on_the_run"}
     if column not in allowed:

@@ -1,0 +1,33 @@
+name: Update Auction Allotments
+
+on:
+  # Treasury releases data on the ~7th business day of each month at 3 PM ET.
+  # Run on days 7–13 of each month at 21:00 UTC (4 PM ET / 5 PM EDT) to catch it.
+  schedule:
+    - cron: '0 21 7-13 * *'
+  workflow_dispatch:
+
+jobs:
+  update:
+    name: Download and upsert latest auction allotments
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Update auction allotments
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python scripts/backfill_auctions.py --resume
