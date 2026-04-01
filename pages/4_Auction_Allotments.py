@@ -212,7 +212,7 @@ if not bar_data.empty:
             title=f"{selected_series[0]} — Allotment by Investor Class ($m)",
             color_discrete_sequence=["#1f4e79"],
         )
-    fig_bar.update_layout(**PLOTLY_LAYOUT, hovermode="y unified")
+    fig_bar.update_layout(**{**PLOTLY_LAYOUT, "hovermode": "y unified"})
     st.plotly_chart(fig_bar, use_container_width=True)
 
 # ── 4. Absolute allotment trends — top investor classes ───────────────────────
