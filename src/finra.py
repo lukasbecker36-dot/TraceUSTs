@@ -137,8 +137,8 @@ def parse_xlsx(content: bytes, trade_date: date) -> list[dict]:
     data = data.iloc[:, :n_cols].copy()
     data.columns = _FLAT_COLS[:n_cols]
 
-    # Clean up the Category column
-    data["category"] = data["category"].astype(str).str.strip()
+    # Clean up the Category column — fillna first to avoid float NaN slipping through
+    data["category"] = data["category"].fillna("").astype(str).str.strip()
 
     date_str = trade_date.strftime("%Y-%m-%d")
     records: list[dict] = []
@@ -148,9 +148,12 @@ def parse_xlsx(content: bytes, trade_date: date) -> list[dict]:
 
     for _, row in data.iterrows():
         cat = row["category"]
+        # Guard: ensure cat is always a plain string regardless of dtype
+        if not isinstance(cat, str):
+            cat = str(cat).strip()
 
         # ── Skip non-data rows ────────────────────────────────────────────────
-        if not cat or cat.lower() in ("nan", "none") or cat in _SKIP_MARKERS:
+        if not cat or cat.lower() in ("nan", "none", "") or cat in _SKIP_MARKERS:
             continue
         if cat.lower().startswith("strips"):
             continue  # footnote row
