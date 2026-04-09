@@ -231,6 +231,9 @@ else:
 st.subheader("Belly vs Long End — Nominal Coupons & TIPS")
 st.caption("Belly: ≥2y to <10y  |  Long: ≥10y")
 
+include_tips = st.checkbox("Include TIPS", value=True, key="bl_include_tips")
+bl_subtypes = ["Nominal Coupons", "TIPS"] if include_tips else ["Nominal Coupons"]
+
 _BELLY_BUCKETS = {
     "<= 2 years",
     "> 2 years and <= 3 years",
@@ -245,7 +248,7 @@ _LONG_BUCKETS = {
 
 bl_df = analytics.maturity_only(df)
 bl_df = bl_df[
-    bl_df["security_subtype"].isin(["Nominal Coupons", "TIPS"])
+    bl_df["security_subtype"].isin(bl_subtypes)
     & bl_df["trading_category"].str.lower().str.contains("total", na=False)
 ].copy()
 
@@ -263,8 +266,8 @@ else:
         .reset_index()
     )
 
-    bl_tabs = st.tabs(["Nominal Coupons", "TIPS"])
-    for tab, subtype in zip(bl_tabs, ["Nominal Coupons", "TIPS"]):
+    bl_tabs = st.tabs(bl_subtypes)
+    for tab, subtype in zip(bl_tabs, bl_subtypes):
         with tab:
             subset = bl_daily[bl_daily["security_subtype"] == subtype]
             if subset.empty:
