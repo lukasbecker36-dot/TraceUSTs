@@ -231,7 +231,7 @@ else:
 st.subheader("Belly vs Long End — Nominal Coupons & TIPS")
 st.caption("Belly: ≥2y to <10y  |  Long: ≥10y")
 
-include_tips = st.checkbox("Include TIPS", value=True, key="bl_include_tips")
+include_tips = st.checkbox("Include TIPS", value=False, key="bl_include_tips")
 bl_subtypes = ["Nominal Coupons", "TIPS"] if include_tips else ["Nominal Coupons"]
 
 _BELLY_BUCKETS = {
