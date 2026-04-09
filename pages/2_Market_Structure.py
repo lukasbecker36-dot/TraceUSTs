@@ -225,3 +225,87 @@ else:
         hovermode="closest",
     )
     st.plotly_chart(fig_heat, use_container_width=True)
+
+# ── 5. Belly vs Long end ───────────────────────────────────────────────────────
+
+st.subheader("Belly vs Long End — Nominal Coupons & TIPS")
+st.caption("Belly: ≥2y to <10y  |  Long: ≥10y")
+
+_BELLY_BUCKETS = {
+    "<= 2 years",
+    "> 2 years and <= 3 years",
+    "> 3 years and <= 5 years",
+    "> 5 years and <= 7 years",
+    "> 7 years and <= 10 years",
+}
+_LONG_BUCKETS = {
+    "> 10 years and <= 20 years",
+    "> 20 years",
+}
+
+bl_df = analytics.maturity_only(df)
+bl_df = bl_df[
+    bl_df["security_subtype"].isin(["Nominal Coupons", "TIPS"])
+    & bl_df["trading_category"].str.lower().str.contains("total", na=False)
+].copy()
+
+if bl_df.empty:
+    st.info("No maturity-bucket data available for belly/long comparison.")
+else:
+    bl_df["tenor_group"] = bl_df["maturity_bucket"].map(
+        lambda b: "Belly" if b in _BELLY_BUCKETS else ("Long" if b in _LONG_BUCKETS else None)
+    )
+    bl_df = bl_df[bl_df["tenor_group"].notna()]
+
+    bl_daily = (
+        bl_df.groupby(["trade_date", "security_subtype", "tenor_group"])["volume_par"]
+        .sum()
+        .reset_index()
+    )
+
+    bl_tabs = st.tabs(["Nominal Coupons", "TIPS"])
+    for tab, subtype in zip(bl_tabs, ["Nominal Coupons", "TIPS"]):
+        with tab:
+            subset = bl_daily[bl_daily["security_subtype"] == subtype]
+            if subset.empty:
+                st.info(f"No {subtype} belly/long data in this date range.")
+                continue
+
+            fig_bl = px.line(
+                subset.sort_values(["tenor_group", "trade_date"]),
+                x="trade_date",
+                y="volume_par",
+                color="tenor_group",
+                color_discrete_map={"Belly": "#2a9d8f", "Long": "#e76f51"},
+                labels={
+                    "trade_date": "Date",
+                    "volume_par": "Volume (par, $bn)",
+                    "tenor_group": "Tenor Group",
+                },
+                title=f"{subtype} — Belly vs Long End Volume ($bn)",
+            )
+            fig_bl.update_layout(**PLOTLY_LAYOUT)
+            fig_bl.update_traces(line=dict(width=1.5))
+            st.plotly_chart(fig_bl, use_container_width=True)
+
+            # Share chart
+            bl_total = bl_daily[bl_daily["security_subtype"] == subtype].copy()
+            bl_total["total"] = bl_total.groupby("trade_date")["volume_par"].transform("sum")
+            bl_total["share_pct"] = bl_total["volume_par"] / bl_total["total"] * 100
+
+            fig_bl_share = px.line(
+                bl_total.sort_values(["tenor_group", "trade_date"]),
+                x="trade_date",
+                y="share_pct",
+                color="tenor_group",
+                color_discrete_map={"Belly": "#2a9d8f", "Long": "#e76f51"},
+                labels={
+                    "trade_date": "Date",
+                    "share_pct": "Share (%)",
+                    "tenor_group": "Tenor Group",
+                },
+                title=f"{subtype} — Belly vs Long End Share of Coupon Volume (%)",
+            )
+            fig_bl_share.update_layout(**PLOTLY_LAYOUT)
+            fig_bl_share.update_traces(line=dict(width=1.5))
+            st.plotly_chart(fig_bl_share, use_container_width=True)
