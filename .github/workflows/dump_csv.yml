@@ -18,6 +18,8 @@ jobs:
     name: Dump Turso tables to CSV and commit
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
