@@ -1,0 +1,57 @@
+name: Dump data to CSV
+
+on:
+  workflow_dispatch:
+    inputs:
+      table:
+        description: "Table to dump (leave blank for both)"
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - treasury_daily
+          - auction_allotments
+
+jobs:
+  dump:
+    name: Dump Turso tables to CSV and commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Dump to CSV
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          TABLE="${{ github.event.inputs.table }}"
+          if [ -n "$TABLE" ]; then
+            python scripts/dump_to_csv.py --table "$TABLE"
+          else
+            python scripts/dump_to_csv.py
+          fi
+
+      - name: Commit and push CSVs
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/*.csv
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update data CSVs [skip ci]"
+            git push
+          fi
