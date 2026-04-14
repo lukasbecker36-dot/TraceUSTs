@@ -73,8 +73,14 @@ def discover_file_urls() -> dict[str, list[str]]:
         if full not in coupon_urls:
             coupon_urls.append(full)
 
-    logger.info("Discovered %d Bills URLs, %d Coupon URLs", len(bills_urls), len(coupon_urls))
-    return {"Bills": sorted(set(bills_urls)), "Coupons": sorted(set(coupon_urls))}
+    bills_deduped = sorted(set(bills_urls))
+    coupons_deduped = sorted(set(coupon_urls))
+    logger.info("Discovered %d Bills URLs, %d Coupon URLs", len(bills_deduped), len(coupons_deduped))
+    for u in bills_deduped:
+        logger.info("  Bills:   %s", u.split("/")[-1])
+    for u in coupons_deduped:
+        logger.info("  Coupons: %s", u.split("/")[-1])
+    return {"Bills": bills_deduped, "Coupons": coupons_deduped}
 
 
 def download_xls(url: str) -> Optional[bytes]:

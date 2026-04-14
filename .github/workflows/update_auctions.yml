@@ -1,10 +1,11 @@
 name: Update Auction Allotments
 
 on:
-  # Treasury releases data on the ~7th business day of each month at 3 PM ET.
-  # Run on days 7–13 of each month at 21:00 UTC (4 PM ET / 5 PM EDT) to catch it.
+  # Run daily Mon–Fri at 21:00 UTC (4 PM ET / 5 PM EDT) — after Treasury's 3 PM ET release.
+  # Treasury publishes Bills once a month and Coupons twice a month (on ~7th and ~22nd
+  # business days). Running daily is cheap: --resume skips everything when there's no new data.
   schedule:
-    - cron: '0 21 7-13 * *'
+    - cron: '0 21 * * 1-5'
   workflow_dispatch:
 
 jobs:
