@@ -17,8 +17,13 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_TREASURY_PAGE = "https://home.treasury.gov/data/investor-class-auction-allotments"
 _BASE_URL = "https://home.treasury.gov"
+_TREASURY_PAGE = "https://home.treasury.gov/data/investor-class-auction-allotments"
+
+# data.gov CKAN API — more reliable than scraping the JS-rendered Treasury page
+_CKAN_API = "https://catalog.data.gov/api/3/action/package_show"
+_BILLS_PACKAGE  = "auction-allotments-by-investor-class-for-marketable-treasury-bill-securities"
+_COUPONS_PACKAGE = "auction-allotments-by-investor-class-for-marketable-treasury-coupon-securities"
 
 # Columns that identify an auction row (not investor class allotment columns)
 _ID_COL_PATTERNS = [
@@ -39,22 +44,38 @@ def _is_id_col(name: str) -> bool:
     return any(re.search(p, n) for p in _ID_COL_PATTERNS)
 
 
-def discover_file_urls() -> dict[str, list[str]]:
-    """
-    Scrape the Treasury page and return all .xls download URLs.
+def _urls_from_ckan(package_id: str) -> list[str]:
+    """Return all XLS/XLSX download URLs from a data.gov CKAN package."""
+    try:
+        resp = requests.get(_CKAN_API, params={"id": package_id}, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("success"):
+            logger.warning("CKAN API returned success=false for package %s", package_id)
+            return []
+        urls = []
+        for resource in data["result"].get("resources", []):
+            url = resource.get("url", "")
+            if re.search(r"\.xls[x]?$", url, re.IGNORECASE):
+                urls.append(url)
+        logger.info("CKAN: found %d XLS URLs for package %s", len(urls), package_id)
+        return urls
+    except Exception as exc:
+        logger.warning("CKAN API failed for %s: %s", package_id, exc)
+        return []
 
-    Returns:
-        {"Bills": [url, ...], "Coupons": [url, ...]}  sorted oldest→newest
-        (oldest files first so backfill can stop early on --resume)
-    """
-    resp = requests.get(_TREASURY_PAGE, timeout=30)
-    resp.raise_for_status()
-    html = resp.text
 
-    bills_urls = []
-    coupon_urls = []
+def _urls_from_html() -> dict[str, list[str]]:
+    """Fallback: scrape the Treasury page for XLS links (works only if page is not JS-rendered)."""
+    try:
+        resp = requests.get(_TREASURY_PAGE, timeout=30)
+        resp.raise_for_status()
+        html = resp.text
+    except Exception as exc:
+        logger.warning("Treasury page fetch failed: %s", exc)
+        return {"Bills": [], "Coupons": []}
 
-    # Match all hrefs ending in -IC-Bills.xls or -IC-Coupons.xls (case insensitive)
+    bills_urls, coupon_urls = [], []
     for href in re.findall(r'href="([^"]*-IC-(?:Bills|Coupons)[^"]*\.xls[x]?)"', html, re.IGNORECASE):
         full = href if href.startswith("http") else _BASE_URL + href
         if re.search(r"-IC-Bills", href, re.IGNORECASE):
@@ -62,24 +83,38 @@ def discover_file_urls() -> dict[str, list[str]]:
         else:
             coupon_urls.append(full)
 
-    # Also look for archive/historical links
-    for href in re.findall(r'href="([^"]*IC[^"]*allotments[^"]*Bills[^"]*\.xls[x]?)"', html, re.IGNORECASE):
-        full = href if href.startswith("http") else _BASE_URL + href
-        if full not in bills_urls:
-            bills_urls.append(full)
+    logger.info("HTML scrape: found %d Bills, %d Coupon URLs", len(bills_urls), len(coupon_urls))
+    return {"Bills": bills_urls, "Coupons": coupon_urls}
 
-    for href in re.findall(r'href="([^"]*IC[^"]*allotments[^"]*Coupons[^"]*\.xls[x]?)"', html, re.IGNORECASE):
-        full = href if href.startswith("http") else _BASE_URL + href
-        if full not in coupon_urls:
-            coupon_urls.append(full)
 
-    bills_deduped = sorted(set(bills_urls))
+def discover_file_urls() -> dict[str, list[str]]:
+    """
+    Return all XLS download URLs for Bills and Coupon Securities.
+
+    Tries data.gov CKAN API first (reliable JSON), falls back to HTML scraping.
+
+    Returns:
+        {"Bills": [url, ...], "Coupons": [url, ...]}  sorted for deterministic order
+    """
+    bills_urls  = _urls_from_ckan(_BILLS_PACKAGE)
+    coupon_urls = _urls_from_ckan(_COUPONS_PACKAGE)
+
+    # If CKAN found nothing, fall back to HTML scraping
+    if not bills_urls and not coupon_urls:
+        logger.warning("CKAN returned no URLs — falling back to HTML scraping")
+        html_urls = _urls_from_html()
+        bills_urls  = html_urls["Bills"]
+        coupon_urls = html_urls["Coupons"]
+
+    bills_deduped   = sorted(set(bills_urls))
     coupons_deduped = sorted(set(coupon_urls))
-    logger.info("Discovered %d Bills URLs, %d Coupon URLs", len(bills_deduped), len(coupons_deduped))
+
+    logger.info("Final: %d Bills URLs, %d Coupon URLs", len(bills_deduped), len(coupons_deduped))
     for u in bills_deduped:
         logger.info("  Bills:   %s", u.split("/")[-1])
     for u in coupons_deduped:
         logger.info("  Coupons: %s", u.split("/")[-1])
+
     return {"Bills": bills_deduped, "Coupons": coupons_deduped}
 
 
