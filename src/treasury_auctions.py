@@ -3,13 +3,16 @@ Treasury investor class auction allotments — URL discovery and XLS parser.
 
 Data source: https://home.treasury.gov/data/investor-class-auction-allotments
 - Two series: Bills and Coupon Securities
-- Files published monthly (~7th business day) as dated .xls files
-- URL pattern: https://home.treasury.gov/system/files/276/<MonthName-Day-Year>-IC-Bills.xls
-- Files are cumulative (contain all auctions from Oct 2009 to release date)
+- Files published monthly (~7th business day at 3 PM ET) as dated .xls files
+- URL pattern: https://home.treasury.gov/system/files/276/<MonthName>-<Day>-<Year>-IC-Bills.xls
+  e.g. https://home.treasury.gov/system/files/276/April-10-2026-IC-Bills.xls
+- Files are cumulative (each file contains all auctions from Oct 2009 to release date)
 """
+import calendar
 import io
 import logging
 import re
+from datetime import date, timedelta
 from typing import Optional
 
 import pandas as pd
@@ -17,13 +20,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "https://home.treasury.gov"
-_TREASURY_PAGE = "https://home.treasury.gov/data/investor-class-auction-allotments"
-
-# data.gov CKAN API — more reliable than scraping the JS-rendered Treasury page
-_CKAN_API = "https://catalog.data.gov/api/3/action/package_show"
-_BILLS_PACKAGE  = "auction-allotments-by-investor-class-for-marketable-treasury-bill-securities"
-_COUPONS_PACKAGE = "auction-allotments-by-investor-class-for-marketable-treasury-coupon-securities"
+_BASE = "https://home.treasury.gov/system/files/276"
 
 # Columns that identify an auction row (not investor class allotment columns)
 _ID_COL_PATTERNS = [
@@ -44,78 +41,80 @@ def _is_id_col(name: str) -> bool:
     return any(re.search(p, n) for p in _ID_COL_PATTERNS)
 
 
-def _urls_from_ckan(package_id: str) -> list[str]:
-    """Return all XLS/XLSX download URLs from a data.gov CKAN package."""
-    try:
-        resp = requests.get(_CKAN_API, params={"id": package_id}, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get("success"):
-            logger.warning("CKAN API returned success=false for package %s", package_id)
-            return []
-        urls = []
-        for resource in data["result"].get("resources", []):
-            url = resource.get("url", "")
-            if re.search(r"\.xls[x]?$", url, re.IGNORECASE):
-                urls.append(url)
-        logger.info("CKAN: found %d XLS URLs for package %s", len(urls), package_id)
-        return urls
-    except Exception as exc:
-        logger.warning("CKAN API failed for %s: %s", package_id, exc)
-        return []
+def _candidate_url(year: int, month: int, day: int, series: str) -> str:
+    month_name = calendar.month_name[month]
+    suffix = "IC-Bills" if series == "Bills" else "IC-Coupons"
+    return f"{_BASE}/{month_name}-{day}-{year}-{suffix}.xls"
 
 
-def _urls_from_html() -> dict[str, list[str]]:
-    """Fallback: scrape the Treasury page for XLS links (works only if page is not JS-rendered)."""
-    try:
-        resp = requests.get(_TREASURY_PAGE, timeout=30)
-        resp.raise_for_status()
-        html = resp.text
-    except Exception as exc:
-        logger.warning("Treasury page fetch failed: %s", exc)
-        return {"Bills": [], "Coupons": []}
-
-    bills_urls, coupon_urls = [], []
-    for href in re.findall(r'href="([^"]*-IC-(?:Bills|Coupons)[^"]*\.xls[x]?)"', html, re.IGNORECASE):
-        full = href if href.startswith("http") else _BASE_URL + href
-        if re.search(r"-IC-Bills", href, re.IGNORECASE):
-            bills_urls.append(full)
-        else:
-            coupon_urls.append(full)
-
-    logger.info("HTML scrape: found %d Bills, %d Coupon URLs", len(bills_urls), len(coupon_urls))
-    return {"Bills": bills_urls, "Coupons": coupon_urls}
+def _find_url_for_month(year: int, month: int, series: str) -> Optional[str]:
+    """
+    Probe days 5–20 of the given month to find the published Treasury IC file.
+    The 7th business day typically falls between days 8–15.
+    Uses HEAD requests so it's fast (no body downloaded).
+    """
+    today = date.today()
+    for day in range(5, 21):
+        try:
+            candidate_date = date(year, month, day)
+        except ValueError:
+            continue
+        if candidate_date > today:
+            break
+        url = _candidate_url(year, month, day, series)
+        try:
+            resp = requests.head(url, timeout=10, allow_redirects=True)
+            if resp.status_code == 200:
+                logger.info("Found %s: %s-%d-%d (day %d)", series, calendar.month_name[month], day, year, day)
+                return url
+        except requests.RequestException:
+            continue
+    return None
 
 
 def discover_file_urls() -> dict[str, list[str]]:
     """
-    Return all XLS download URLs for Bills and Coupon Securities.
+    Probe the Treasury CDN to find the most recently published Bills and Coupons files.
 
-    Tries data.gov CKAN API first (reliable JSON), falls back to HTML scraping.
+    Checks the current month and 3 prior months (covers the case where the current
+    month's file hasn't been published yet).
 
     Returns:
-        {"Bills": [url, ...], "Coupons": [url, ...]}  sorted for deterministic order
+        {"Bills": [url], "Coupons": [url]}  — typically one URL per series
+        (files are cumulative so the latest file contains all historical data)
     """
-    bills_urls  = _urls_from_ckan(_BILLS_PACKAGE)
-    coupon_urls = _urls_from_ckan(_COUPONS_PACKAGE)
+    today = date.today()
+    bills_urls: list[str] = []
+    coupon_urls: list[str] = []
 
-    # If CKAN found nothing, fall back to HTML scraping
-    if not bills_urls and not coupon_urls:
-        logger.warning("CKAN returned no URLs — falling back to HTML scraping")
-        html_urls = _urls_from_html()
-        bills_urls  = html_urls["Bills"]
-        coupon_urls = html_urls["Coupons"]
+    # Walk back through recent months until we find a file for each series
+    for months_back in range(4):
+        year = today.year
+        month = today.month - months_back
+        while month <= 0:
+            month += 12
+            year -= 1
 
-    bills_deduped   = sorted(set(bills_urls))
-    coupons_deduped = sorted(set(coupon_urls))
+        if not bills_urls:
+            url = _find_url_for_month(year, month, "Bills")
+            if url:
+                bills_urls.append(url)
 
-    logger.info("Final: %d Bills URLs, %d Coupon URLs", len(bills_deduped), len(coupons_deduped))
-    for u in bills_deduped:
+        if not coupon_urls:
+            url = _find_url_for_month(year, month, "Coupons")
+            if url:
+                coupon_urls.append(url)
+
+        if bills_urls and coupon_urls:
+            break
+
+    logger.info("Final: %d Bills URLs, %d Coupon URLs", len(bills_urls), len(coupon_urls))
+    for u in bills_urls:
         logger.info("  Bills:   %s", u.split("/")[-1])
-    for u in coupons_deduped:
+    for u in coupon_urls:
         logger.info("  Coupons: %s", u.split("/")[-1])
 
-    return {"Bills": bills_deduped, "Coupons": coupons_deduped}
+    return {"Bills": bills_urls, "Coupons": coupon_urls}
 
 
 def download_xls(url: str) -> Optional[bytes]:
