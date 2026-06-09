@@ -52,82 +52,77 @@ def _candidate_urls(year: int, month: int, day: int, series: str) -> list[str]:
     ]
 
 
-def _url_exists(url: str) -> bool:
-    """Check if a URL serves a real file. Tries HEAD first, falls back to GET."""
-    try:
-        resp = requests.head(url, timeout=8, allow_redirects=True)
-        if resp.status_code == 200:
-            return True
-        if resp.status_code == 405:
-            with requests.get(url, timeout=8, stream=True) as r:
-                return r.status_code == 200
-        return False
-    except requests.RequestException:
-        return False
-
-
-def _find_url_for_month(year: int, month: int, series: str) -> Optional[str]:
+def _try_download(url: str) -> Optional[bytes]:
     """
-    Probe days 5–20 of the given month, trying both URL formats per day.
-    The 7th business day typically falls between days 8–15.
+    Attempt a full download of url. Returns bytes on success, None on 404 or error.
+    Uses a generous timeout since the Treasury CDN is slow.
+    """
+    try:
+        resp = requests.get(url, timeout=60)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        # Reject HTML responses (CDN sometimes returns a redirect page instead of 404)
+        if resp.content[:5] in (b"<html", b"<!DOC", b"<HTML"):
+            return None
+        return resp.content
+    except requests.RequestException:
+        return None
+
+
+def _fetch_for_month(year: int, month: int, series: str) -> tuple[Optional[str], Optional[bytes]]:
+    """
+    Try to download the Treasury IC file for a given month/series.
+    Tries the most likely business days (7–13) first in both URL formats.
+    Returns (url, content) on success, (None, None) if not found.
     """
     today = date.today()
-    for day in range(5, 21):
+    # 7th business day is almost always between days 7–13; try those first, then widen
+    for day in [8, 9, 7, 10, 11, 12, 13, 6, 14, 15, 5, 16]:
         try:
             if date(year, month, day) > today:
-                break
+                continue
         except ValueError:
             continue
         for url in _candidate_urls(year, month, day, series):
-            if _url_exists(url):
+            content = _try_download(url)
+            if content is not None:
                 logger.info("Found %s: %s", series, url.split("/")[-1])
-                return url
-    return None
+                return url, content
+    return None, None
 
 
-def discover_file_urls() -> dict[str, list[str]]:
+def discover_and_download() -> dict[str, list[tuple[str, bytes]]]:
     """
-    Probe the Treasury CDN to find the most recently published Bills and Coupons files.
-
-    Checks the current month and 3 prior months (covers the case where the current
-    month's file hasn't been published yet).
+    Find and download the most recently published Bills and Coupons files.
+    Tries the current month then the prior month.
 
     Returns:
-        {"Bills": [url], "Coupons": [url]}  — typically one URL per series
-        (files are cumulative so the latest file contains all historical data)
+        {"Bills": [(url, content), ...], "Coupons": [(url, content), ...]}
     """
     today = date.today()
-    bills_urls: list[str] = []
-    coupon_urls: list[str] = []
+    result: dict[str, list[tuple[str, bytes]]] = {"Bills": [], "Coupons": []}
 
-    # Walk back through recent months until we find a file for each series
-    for months_back in range(2):
-        year = today.year
-        month = today.month - months_back
-        while month <= 0:
-            month += 12
-            year -= 1
+    for series in ("Bills", "Coupons"):
+        for months_back in range(2):
+            year = today.year
+            month = today.month - months_back
+            while month <= 0:
+                month += 12
+                year -= 1
+            url, content = _fetch_for_month(year, month, series)
+            if url and content:
+                result[series].append((url, content))
+                break  # found latest — stop looking back
 
-        if not bills_urls:
-            url = _find_url_for_month(year, month, "Bills")
-            if url:
-                bills_urls.append(url)
-
-        if not coupon_urls:
-            url = _find_url_for_month(year, month, "Coupons")
-            if url:
-                coupon_urls.append(url)
-
-        if bills_urls and coupon_urls:
-            break
-
-    logger.info("Final: %d Bills URLs, %d Coupon URLs", len(bills_urls), len(coupon_urls))
-    for u in bills_urls:
-        logger.info("  Bills:   %s", u.split("/")[-1])
-    for u in coupon_urls:
-        logger.info("  Coupons: %s", u.split("/")[-1])
-
-    return {"Bills": bills_urls, "Coupons": coupon_urls}
+    bills_count = len(result["Bills"])
+    coupons_count = len(result["Coupons"])
+    logger.info("Found %d Bills file(s), %d Coupon file(s)", bills_count, coupons_count)
+    for url, _ in result["Bills"]:
+        logger.info("  Bills:   %s", url.split("/")[-1])
+    for url, _ in result["Coupons"]:
+        logger.info("  Coupons: %s", url.split("/")[-1])
+    return result
 
 
 def download_xls(url: str) -> Optional[bytes]:

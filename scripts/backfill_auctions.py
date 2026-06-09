@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import db
-from src.treasury_auctions import discover_file_urls, fetch_and_parse_url
+from src.treasury_auctions import discover_and_download, parse_xls
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,62 +58,48 @@ def main() -> None:
         from_date = args.from_date
         logger.info("Loading auctions with issue_date >= %s", from_date)
 
-    logger.info("Discovering available files from Treasury website…")
+    logger.info("Discovering and downloading files from Treasury website…")
     try:
-        urls_by_series = discover_file_urls()
+        files = discover_and_download()
     except Exception as exc:
-        logger.error("Failed to discover URLs: %s", exc)
+        logger.error("Failed to fetch files: %s", exc)
         sys.exit(1)
 
-    total_urls = sum(len(v) for v in urls_by_series.values())
-    logger.info("Found %d files total (%d Bills, %d Coupons)",
-                total_urls,
-                len(urls_by_series.get("Bills", [])),
-                len(urls_by_series.get("Coupons", [])))
-
-    if total_urls == 0:
-        logger.warning("No files found. Check that the Treasury page is accessible.")
+    total_files = sum(len(v) for v in files.values())
+    if total_files == 0:
+        logger.warning("No files found. Treasury may not have published this month's data yet.")
         sys.exit(1)
 
     success = skipped = failed = 0
     total_records = 0
     file_num = 0
 
-    for series, urls in urls_by_series.items():
-        for url in urls:
+    for series, file_list in files.items():
+        for url, content in file_list:
             file_num += 1
+            fname = url.split("/")[-1]
             try:
-                records = fetch_and_parse_url(url, series)
-                if records is None:
-                    skipped += 1
-                    logger.info("[%d/%d] %s  skipped (download failed)", file_num, total_urls, url.split("/")[-1])
-                    time.sleep(SLEEP_BETWEEN)
-                    continue
+                records = parse_xls(content, series)
 
-                # Filter by from_date if set
                 if from_date:
                     records = [r for r in records if r["issue_date"] > from_date]
 
                 if not records:
                     skipped += 1
-                    logger.info("[%d/%d] %s  skipped (no new data after %s)",
-                                file_num, total_urls, url.split("/")[-1], from_date)
-                    time.sleep(SLEEP_BETWEEN)
+                    logger.info("[%d/%d] %s  skipped (no new data after %s)", file_num, total_files, fname, from_date)
                     continue
 
                 db.upsert_auction_records(records)
                 total_records += len(records)
                 success += 1
-                logger.info("[%d/%d] %s  ✓  %d records",
-                            file_num, total_urls, url.split("/")[-1], len(records))
-                time.sleep(SLEEP_BETWEEN)
+                logger.info("[%d/%d] %s  ✓  %d records", file_num, total_files, fname, len(records))
 
             except KeyboardInterrupt:
                 logger.warning("Interrupted after %d files.", file_num - 1)
                 break
             except Exception as exc:
                 failed += 1
-                logger.error("[%d/%d] %s  ✗  %s", file_num, total_urls, url.split("/")[-1], exc)
+                logger.error("[%d/%d] %s  ✗  %s", file_num, total_files, fname, exc)
                 time.sleep(SLEEP_ON_ERROR)
 
     logger.info(
