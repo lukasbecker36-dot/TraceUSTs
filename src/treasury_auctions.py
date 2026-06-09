@@ -55,13 +55,12 @@ def _candidate_urls(year: int, month: int, day: int, series: str) -> list[str]:
 def _url_exists(url: str) -> bool:
     """Check if a URL serves a real file. Tries HEAD first, falls back to GET."""
     try:
-        resp = requests.head(url, timeout=4, allow_redirects=True)
+        resp = requests.head(url, timeout=8, allow_redirects=True)
         if resp.status_code == 200:
             return True
         if resp.status_code == 405:
-            # HEAD not supported — try GET streaming just the first bytes
-            resp = requests.get(url, timeout=4, stream=True)
-            return resp.status_code == 200
+            with requests.get(url, timeout=8, stream=True) as r:
+                return r.status_code == 200
         return False
     except requests.RequestException:
         return False
@@ -102,7 +101,7 @@ def discover_file_urls() -> dict[str, list[str]]:
     coupon_urls: list[str] = []
 
     # Walk back through recent months until we find a file for each series
-    for months_back in range(4):
+    for months_back in range(2):
         year = today.year
         month = today.month - months_back
         while month <= 0:
