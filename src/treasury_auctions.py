@@ -52,6 +52,21 @@ def _candidate_urls(year: int, month: int, day: int, series: str) -> list[str]:
     ]
 
 
+def _url_exists(url: str) -> bool:
+    """Check if a URL serves a real file. Tries HEAD first, falls back to GET."""
+    try:
+        resp = requests.head(url, timeout=4, allow_redirects=True)
+        if resp.status_code == 200:
+            return True
+        if resp.status_code == 405:
+            # HEAD not supported — try GET streaming just the first bytes
+            resp = requests.get(url, timeout=4, stream=True)
+            return resp.status_code == 200
+        return False
+    except requests.RequestException:
+        return False
+
+
 def _find_url_for_month(year: int, month: int, series: str) -> Optional[str]:
     """
     Probe days 5–20 of the given month, trying both URL formats per day.
@@ -65,13 +80,9 @@ def _find_url_for_month(year: int, month: int, series: str) -> Optional[str]:
         except ValueError:
             continue
         for url in _candidate_urls(year, month, day, series):
-            try:
-                resp = requests.head(url, timeout=10, allow_redirects=True)
-                if resp.status_code == 200:
-                    logger.info("Found %s: %s", series, url.split("/")[-1])
-                    return url
-            except requests.RequestException:
-                continue
+            if _url_exists(url):
+                logger.info("Found %s: %s", series, url.split("/")[-1])
+                return url
     return None
 
 
