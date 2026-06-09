@@ -4,8 +4,9 @@ Treasury investor class auction allotments — URL discovery and XLS parser.
 Data source: https://home.treasury.gov/data/investor-class-auction-allotments
 - Two series: Bills and Coupon Securities
 - Files published monthly (~7th business day at 3 PM ET) as dated .xls files
-- URL pattern: https://home.treasury.gov/system/files/276/<MonthName>-<Day>-<Year>-IC-Bills.xls
-  e.g. https://home.treasury.gov/system/files/276/April-10-2026-IC-Bills.xls
+- URL patterns (Treasury has used both separators):
+    https://home.treasury.gov/system/files/276/June_8_2026_IC_Bills.xls   (underscore, newer)
+    https://home.treasury.gov/system/files/276/March-9-2026-IC-Bills.xls  (hyphen, older)
 - Files are cumulative (each file contains all auctions from Oct 2009 to release date)
 """
 import calendar
@@ -41,34 +42,36 @@ def _is_id_col(name: str) -> bool:
     return any(re.search(p, n) for p in _ID_COL_PATTERNS)
 
 
-def _candidate_url(year: int, month: int, day: int, series: str) -> str:
-    month_name = calendar.month_name[month]
-    suffix = "IC-Bills" if series == "Bills" else "IC-Coupons"
-    return f"{_BASE}/{month_name}-{day}-{year}-{suffix}.xls"
+def _candidate_urls(year: int, month: int, day: int, series: str) -> list[str]:
+    """Both known URL formats — Treasury switched from hyphens to underscores at some point."""
+    m = calendar.month_name[month]
+    bills = series == "Bills"
+    return [
+        f"{_BASE}/{m}_{day}_{year}_IC_{'Bills' if bills else 'Coupons'}.xls",   # newer: Jun_8_2026
+        f"{_BASE}/{m}-{day}-{year}-IC-{'Bills' if bills else 'Coupons'}.xls",  # older: Mar-9-2026
+    ]
 
 
 def _find_url_for_month(year: int, month: int, series: str) -> Optional[str]:
     """
-    Probe days 5–20 of the given month to find the published Treasury IC file.
+    Probe days 5–20 of the given month, trying both URL formats per day.
     The 7th business day typically falls between days 8–15.
-    Uses HEAD requests so it's fast (no body downloaded).
     """
     today = date.today()
     for day in range(5, 21):
         try:
-            candidate_date = date(year, month, day)
+            if date(year, month, day) > today:
+                break
         except ValueError:
             continue
-        if candidate_date > today:
-            break
-        url = _candidate_url(year, month, day, series)
-        try:
-            resp = requests.head(url, timeout=10, allow_redirects=True)
-            if resp.status_code == 200:
-                logger.info("Found %s: %s-%d-%d (day %d)", series, calendar.month_name[month], day, year, day)
-                return url
-        except requests.RequestException:
-            continue
+        for url in _candidate_urls(year, month, day, series):
+            try:
+                resp = requests.head(url, timeout=10, allow_redirects=True)
+                if resp.status_code == 200:
+                    logger.info("Found %s: %s", series, url.split("/")[-1])
+                    return url
+            except requests.RequestException:
+                continue
     return None
 
 
