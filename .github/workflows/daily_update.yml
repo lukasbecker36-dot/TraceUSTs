@@ -33,6 +33,18 @@ jobs:
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
         run: python scripts/daily_update.py
 
+      # Keep the repo "active" so GitHub doesn't auto-disable scheduled workflows
+      # after 60 days of inactivity. A no-op push to a throwaway ref is invisible
+      # in the commit log and resets the inactivity clock.
+      - name: Keepalive ping
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit --allow-empty -m "chore: keepalive [skip ci]"
+          git push origin HEAD:refs/keepalive/ping --force
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Notify on failure
         if: failure()
         run: |

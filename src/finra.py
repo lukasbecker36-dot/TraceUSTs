@@ -92,8 +92,8 @@ def download_xlsx(trade_date: date) -> Optional[bytes]:
     url = build_url(trade_date)
     try:
         resp = requests.get(url, timeout=30)
-        if resp.status_code == 404:
-            logger.warning("No file for %s (HTTP 404)", trade_date)
+        if resp.status_code in (403, 404):
+            logger.warning("No file for %s (HTTP %d — likely holiday or not yet published)", trade_date, resp.status_code)
             return None
         resp.raise_for_status()
         return resp.content
